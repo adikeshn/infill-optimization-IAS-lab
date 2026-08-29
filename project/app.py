@@ -135,7 +135,6 @@ def _check_worker_auth():
 
 @app.route("/internal/claim", methods=["POST"])
 def internal_claim():
-    """Atomically grab the oldest queued job and mark it running."""
     if not _check_worker_auth():
         return jsonify({"error": "unauthorized"}), 401
 

@@ -164,7 +164,3 @@ def trigger():
     process_jobs.spawn()
     return {"status": "triggered"}
 
-
-@app.function(secrets=[SECRETS], schedule=modal.Period(minutes=15))
-def scheduled_drain():
-    process_jobs.remote()
