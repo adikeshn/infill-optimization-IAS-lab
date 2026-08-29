@@ -47,6 +47,7 @@ def get_finray_infill(
   spacing=0,
   rod_diameter=0.45,
   outline_thickness=0.87,
+  angle_deg=-60,
   debug=True
 ):
 
@@ -54,8 +55,6 @@ def get_finray_infill(
     part,
     outer_thickness=outline_thickness
   )
-
-  angle_deg = -60
 
   bbox = part.val().BoundingBox()
 
@@ -133,6 +132,7 @@ def get_grid_infill(
   rod_diameter=0.45,
   spacing=0,
   outline_thickness=0.87,
+  angle_deg=45,
 ):
   outline, inner, inner_vol = create_triangle_outline(
     part,
@@ -141,8 +141,6 @@ def get_grid_infill(
 
   if density <= 0 or density > 100:
     raise ValueError("density must be in (0, 100].")
-
-  angle_deg = 45
 
   bbox = part.val().BoundingBox()
   cx = (bbox.xmin + bbox.xmax) / 2
@@ -260,7 +258,8 @@ def get_triangle_infill(
   spacing=0,
   density=50,
   rod_diameter=0.45,
-  outline_thickness=0.87
+  outline_thickness=0.87,
+  angle_deg=45
 ):
   outline, inner, inner_vol = create_triangle_outline(
     part,
@@ -270,7 +269,7 @@ def get_triangle_infill(
   if density <= 0 or density > 100:
     raise ValueError("density must be in (0, 100].")
 
-  final_angle_deg = 45
+  final_angle_deg = angle_deg
 
   bbox = part.val().BoundingBox()
   cx = (bbox.xmin + bbox.xmax) / 2
@@ -395,7 +394,8 @@ def get_honeycomb_infill(
   rod_diameter=0.87,
   outline_thickness=1.154,
   layer_idx=0,
-  emulate_prusa_layer_angle=False
+  emulate_prusa_layer_angle=False,
+  angle_deg=-45
 ):
   outline, inner, inner_vol = create_triangle_outline(
     part,
@@ -425,7 +425,7 @@ def get_honeycomb_infill(
   dx = math.sqrt(3.0) * outer_side_length
   dz = 1.5 * outer_side_length
 
-  final_angle_deg = -45
+  final_angle_deg = angle_deg
   if emulate_prusa_layer_angle:
     final_angle_deg += 60 * (layer_idx % 3)
 

@@ -11,6 +11,46 @@ const INFILLS = [
   { label: "Triangle", value: "tri" },
 ];
 
+const DEFAULT_ANGLES = {
+  grid: 45,
+  honey: -45,
+  finr: -60,
+  tri: 45,
+};
+
+function makeRow(infill = "grid") {
+  return {
+    infill,
+    angle: DEFAULT_ANGLES[infill],
+    densityMode: "single",
+    density: 20,
+    densityStart: 10,
+    densityEnd: 20,
+    densityStep: 2,
+  };
+}
+
+function expandDensities(row) {
+  if (row.densityMode !== "range") {
+    return [Number(row.density)];
+  }
+
+  const start = Number(row.densityStart);
+  const end = Number(row.densityEnd);
+  const step = Number(row.densityStep);
+
+  if (!(step > 0) || end < start) {
+    return [];
+  }
+
+  const densities = [];
+  const stepCount = Math.floor((end - start) / step + 1e-9);
+  for (let i = 0; i <= stepCount; i++) {
+    densities.push(Math.round((start + i * step) * 100) / 100);
+  }
+  return densities;
+}
+
 function StlModel({ url }) {
   const geometry = useLoader(STLLoader, url);
 
@@ -30,7 +70,7 @@ function App() {
   const [infThickness, setInfThickness] = useState(0.45);
   const [viewerUrl, setViewerUrl] = useState(null);
   const [viewerTitle, setViewerTitle] = useState("");
-  const [rows, setRows] = useState([{ infill: "grid", density: 20 }]);
+  const [rows, setRows] = useState([makeRow()]);
 
   const [status, setStatus] = useState("");
   const [result, setResult] = useState(null);
@@ -53,17 +93,19 @@ function App() {
   }
 
   function addRow() {
-    setRows([...rows, { infill: "grid", density: 20 }]);
+    setRows([...rows, makeRow()]);
   }
 
   function getStepDownloadUrl(jobName, designName) {
-    const stepName = designName.replace("-", "") + ".step";
-    return `/jobs/${jobName}/infills/${stepName}/download`;
+    return `/jobs/${jobName}/infills/${designName}.step/download`;
   }
 
   function updateRow(index, key, value) {
     const newRows = [...rows];
-    newRows[index][key] = value;
+    newRows[index] = { ...newRows[index], [key]: value };
+    if (key === "infill") {
+      newRows[index].angle = DEFAULT_ANGLES[value];
+    }
     setRows(newRows);
   }
 
@@ -73,15 +115,16 @@ function App() {
   }
 
   function buildSimSpace() {
-    const infills = {
-      grid: [],
-      honey: [],
-      finr: [],
-      tri: [],
-    };
+    const infills = [];
 
     rows.forEach((row) => {
-      infills[row.infill].push(Number(row.density));
+      expandDensities(row).forEach((density) => {
+        infills.push({
+          type: row.infill,
+          density,
+          angle: Number(row.angle),
+        });
+      });
     });
 
     return {
@@ -93,8 +136,7 @@ function App() {
   }
 
   function getStepUrl(jobName, designName) {
-    const stepName = designName.replace("-", "") + ".step";
-    return `/jobs/${jobName}/infills/${stepName}`;
+    return `/jobs/${jobName}/infills/${designName}.step`;
   }
 
   async function pollJob(jobName) {
@@ -133,9 +175,15 @@ function App() {
       return;
     }
 
+    const simSpace = buildSimSpace();
+    if (simSpace.infills.length === 0) {
+      setStatus("No valid density values to run. Check your density ranges.");
+      return;
+    }
+
     const formData = new FormData();
     formData.append("step_file", stepFile);
-    formData.append("sim_space", JSON.stringify(buildSimSpace()));
+    formData.append("sim_space", JSON.stringify(simSpace));
 
     setStatus("Submitting job...");
     setResult(null);
@@ -260,54 +308,126 @@ function App() {
             <thead>
               <tr>
                 <th>Infill</th>
+                <th>Angle (deg)</th>
+                <th>Density Mode</th>
                 <th>Density</th>
                 <th></th>
               </tr>
             </thead>
 
             <tbody>
-              {rows.map((row, index) => (
-                <tr key={index}>
-                  <td>
-                    <select
-                      value={row.infill}
-                      onChange={(e) =>
-                        updateRow(index, "infill", e.target.value)
-                      }
-                    >
-                      {INFILLS.map((infill) => (
-                        <option key={infill.value} value={infill.value}>
-                          {infill.label}
-                        </option>
-                      ))}
-                    </select>
-                  </td>
+              {rows.map((row, index) => {
+                const previewCount = expandDensities(row).length;
 
-                  <td>
-                    <input
-                      type="number"
-                      min="0"
-                      max="100"
-                      step="0.01"
-                      value={row.density}
-                      onChange={(e) =>
-                        updateRow(index, "density", e.target.value)
-                      }
-                    />
-                  </td>
+                return (
+                  <tr key={index}>
+                    <td>
+                      <select
+                        value={row.infill}
+                        onChange={(e) =>
+                          updateRow(index, "infill", e.target.value)
+                        }
+                      >
+                        {INFILLS.map((infill) => (
+                          <option key={infill.value} value={infill.value}>
+                            {infill.label}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
 
-                  <td>
-                    <button
-                      type="button"
-                      className="deleteBtn"
-                      onClick={() => removeRow(index)}
-                      disabled={rows.length === 1}
-                    >
-                      Remove
-                    </button>
-                  </td>
-                </tr>
-              ))}
+                    <td>
+                      <input
+                        type="number"
+                        step="0.1"
+                        value={row.angle}
+                        onChange={(e) =>
+                          updateRow(index, "angle", e.target.value)
+                        }
+                      />
+                    </td>
+
+                    <td>
+                      <select
+                        value={row.densityMode}
+                        onChange={(e) =>
+                          updateRow(index, "densityMode", e.target.value)
+                        }
+                      >
+                        <option value="single">Single</option>
+                        <option value="range">Range</option>
+                      </select>
+                    </td>
+
+                    <td>
+                      {row.densityMode === "range" ? (
+                        <div className="densityRange">
+                          <input
+                            type="number"
+                            min="0"
+                            max="100"
+                            step="0.01"
+                            title="Start density"
+                            value={row.densityStart}
+                            onChange={(e) =>
+                              updateRow(index, "densityStart", e.target.value)
+                            }
+                          />
+                          <span>to</span>
+                          <input
+                            type="number"
+                            min="0"
+                            max="100"
+                            step="0.01"
+                            title="End density"
+                            value={row.densityEnd}
+                            onChange={(e) =>
+                              updateRow(index, "densityEnd", e.target.value)
+                            }
+                          />
+                          <span>step</span>
+                          <input
+                            type="number"
+                            min="0.01"
+                            max="100"
+                            step="0.01"
+                            title="Step size"
+                            value={row.densityStep}
+                            onChange={(e) =>
+                              updateRow(index, "densityStep", e.target.value)
+                            }
+                          />
+                          <span className="densityRangeCount">
+                            ({previewCount} run{previewCount === 1 ? "" : "s"})
+                          </span>
+                        </div>
+                      ) : (
+                        <input
+                          type="number"
+                          min="0"
+                          max="100"
+                          step="0.01"
+                          value={row.density}
+                          onChange={(e) =>
+                            updateRow(index, "density", e.target.value)
+                          }
+                        />
+                      )}
+                    </td>
+
+                    <td>
+                      <button
+                        type="button"
+                        className="deleteBtn"
+                        onClick={() => removeRow(index)}
+                        disabled={rows.length === 1}
+                      >
+                        Remove
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </section>
