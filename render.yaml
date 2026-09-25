@@ -11,3 +11,5 @@ services:
         sync: false
       - key: WORKER_SECRET
         sync: false
+      - key: MODAL_ANALYZE_URL
+        sync: false

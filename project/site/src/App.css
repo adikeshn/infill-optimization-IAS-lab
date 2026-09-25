@@ -294,3 +294,83 @@ a {
 .densityRangeCount {
   font-size: 13px;
 }
+.pickStatus {
+  margin-top: 14px;
+}
+
+.picker {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.pickToolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.modeToggle {
+  display: flex;
+  gap: 8px;
+}
+
+.modeBtn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #cbd4e4;
+  border-radius: 12px;
+  padding: 8px 14px;
+  background: white;
+  color: #172033;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.modeBtn.active {
+  border-color: #315cff;
+  background: #eef2ff;
+  color: #315cff;
+}
+
+.swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+}
+
+.fixedSwatch {
+  background: #315cff;
+}
+
+.forceSwatch {
+  background: #f08c00;
+}
+
+.pickHint {
+  margin: 0;
+  color: #69758c;
+  font-size: 14px;
+}
+
+.pickSummary p {
+  margin: 4px 0;
+}
+
+.pickWarning {
+  color: #c92a2a;
+  font-weight: 700;
+}
+
+.linkBtn {
+  margin-left: 8px;
+  border: 0;
+  padding: 0;
+  background: none;
+  color: #315cff;
+  font-weight: 700;
+  cursor: pointer;
+}

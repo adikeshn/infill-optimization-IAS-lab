@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls, Center } from "@react-three/drei";
 import { STLLoader } from "three-stdlib";
 import { useLoader } from "@react-three/fiber";
+import * as THREE from "three";
 
 const INFILLS = [
   { label: "Grid", value: "grid" },
@@ -63,8 +64,158 @@ function StlModel({ url }) {
   );
 }
 
+const FACE_COLORS = {
+  base: new THREE.Color("#c3cadb"),
+  hover: new THREE.Color("#e3e8f5"),
+  fixed: new THREE.Color("#315cff"),
+  force: new THREE.Color("#f08c00"),
+};
+
+// Tessellation from /analyze -> shared geometry pieces. Every B-rep face is
+// tessellated separately, so each vertex belongs to exactly one face.
+function buildPartMesh({ positions, triangles, face_ids }) {
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setIndex(triangles);
+  geometry.computeVertexNormals();
+  geometry.computeBoundingSphere();
+
+  const vertexFace = new Int32Array(positions.length / 3);
+  face_ids.forEach((face, t) => {
+    for (let k = 0; k < 3; k++) vertexFace[triangles[3 * t + k]] = face;
+  });
+
+  return {
+    position: geometry.getAttribute("position"),
+    normal: geometry.getAttribute("normal"),
+    index: geometry.getIndex(),
+    edges: new THREE.EdgesGeometry(geometry, 20),
+    vertexFace,
+    center: geometry.boundingSphere.center.toArray(),
+    radius: geometry.boundingSphere.radius,
+  };
+}
+
+function ForceGizmo({ center, normal, radius, size }) {
+  const n = new THREE.Vector3(...normal).normalize();
+  const quaternion = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), n);
+  const position = new THREE.Vector3(...center).addScaledVector(n, size * 0.002);
+  const arrowLength = size * 0.25;
+  const arrowOrigin = new THREE.Vector3(...center).addScaledVector(n, arrowLength);
+
+  return (
+    <>
+      <group position={position} quaternion={quaternion}>
+        <mesh raycast={() => null}>
+          <circleGeometry args={[radius, 64]} />
+          <meshBasicMaterial color="#f08c00" transparent opacity={0.45} side={THREE.DoubleSide} depthWrite={false} />
+        </mesh>
+        <mesh raycast={() => null}>
+          <ringGeometry args={[radius * 0.9, radius, 64]} />
+          <meshBasicMaterial color="#c2410c" side={THREE.DoubleSide} />
+        </mesh>
+      </group>
+      <arrowHelper
+        args={[n.clone().negate(), arrowOrigin, arrowLength, "#c2410c", arrowLength * 0.3, arrowLength * 0.15]}
+        raycast={() => null}
+      />
+    </>
+  );
+}
+
+function PartPicker({ analysis, fixedFaces, force, forceRadius, onPick }) {
+  const part = useMemo(() => buildPartMesh(analysis.tessellation), [analysis]);
+  const [hovered, setHovered] = useState(null);
+
+  const geometry = useMemo(() => {
+    const colors = new Float32Array(part.vertexFace.length * 3);
+    part.vertexFace.forEach((face, v) => {
+      let color = FACE_COLORS.base;
+      if (face === force?.face) color = FACE_COLORS.force;
+      else if (fixedFaces.includes(face)) color = FACE_COLORS.fixed;
+      else if (face === hovered) color = FACE_COLORS.hover;
+      color.toArray(colors, 3 * v);
+    });
+
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", part.position);
+    g.setAttribute("normal", part.normal);
+    g.setIndex(part.index);
+    g.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+    return g;
+  }, [part, fixedFaces, force, hovered]);
+
+  function faceAt(event) {
+    return analysis.tessellation.face_ids[event.faceIndex];
+  }
+
+  function handleClick(event) {
+    event.stopPropagation();
+    if (event.delta > 4) return; // the pointer was dragged to orbit, not clicked
+
+    const face = faceAt(event);
+    const point = event.object.worldToLocal(event.point.clone());
+    const normal = analysis.faces[face].normal || event.face.normal.toArray();
+    onPick(face, point.toArray(), normal);
+  }
+
+  const size = part.radius * 2;
+
+  return (
+    <Canvas
+      camera={{
+        up: [0, 0, 1],
+        position: [part.radius * 1.2, -part.radius * 2.4, part.radius * 1.2],
+        near: part.radius / 100,
+        far: part.radius * 100,
+        fov: 45,
+      }}
+    >
+      <ambientLight intensity={0.8} />
+      <directionalLight position={[1, -2, 3]} intensity={1.4} />
+      <directionalLight position={[-2, 1, -1]} intensity={0.5} />
+      <group position={part.center.map((c) => -c)}>
+        <mesh
+          geometry={geometry}
+          onClick={handleClick}
+          onPointerMove={(event) => {
+            event.stopPropagation();
+            const face = faceAt(event);
+            if (face !== hovered) setHovered(face);
+          }}
+          onPointerOut={() => setHovered(null)}
+        >
+          <meshStandardMaterial vertexColors metalness={0.05} roughness={0.7} />
+        </mesh>
+        <lineSegments geometry={part.edges} raycast={() => null}>
+          <lineBasicMaterial color="#4a5568" />
+        </lineSegments>
+        {force && (
+          <ForceGizmo center={force.center} normal={force.normal} radius={forceRadius} size={size} />
+        )}
+      </group>
+      <OrbitControls makeDefault />
+    </Canvas>
+  );
+}
+
+function formatPoint(point) {
+  return `(${point.map((c) => c.toFixed(2)).join(", ")})`;
+}
+
 function App() {
   const [stepFile, setStepFile] = useState(null);
+  const [analysis, setAnalysis] = useState(null);
+  const [analysisStatus, setAnalysisStatus] = useState("");
+  const [pickMode, setPickMode] = useState("fixed");
+  // The canvas picks up new handlers a frame after React commits, so the click
+  // handler reads the mode from a ref to never act on the previous mode.
+  const pickModeRef = useRef("fixed");
+  const [fixedFaces, setFixedFaces] = useState([]);
+  const [force, setForce] = useState(null);
+  const [forceDiameter, setForceDiameter] = useState(5);
+  const [forceMagnitude, setForceMagnitude] = useState(5);
+  const analysisRequest = useRef(0);
   const [meshSize, setMeshSize] = useState(1.0);
   const [outThickness, setOutThickness] = useState(0.87);
   const [infThickness, setInfThickness] = useState(0.45);
@@ -90,6 +241,63 @@ function App() {
     } catch {
       setPreviousJobs([]);
     }
+  }
+
+  async function selectStepFile(file) {
+    const request = ++analysisRequest.current;
+    setStepFile(file || null);
+    setAnalysis(null);
+    setFixedFaces([]);
+    setForce(null);
+    setAnalysisStatus("");
+    if (!file) return;
+
+    setAnalysisStatus("Analyzing part...");
+    const formData = new FormData();
+    formData.append("step_file", file);
+
+    try {
+      const response = await fetch("/analyze", { method: "POST", body: formData });
+      const data = await response.json();
+      if (request !== analysisRequest.current) return;
+      if (!response.ok) throw new Error(data.error || "Part analysis failed.");
+      setAnalysis(data);
+      setAnalysisStatus("");
+    } catch (error) {
+      if (request === analysisRequest.current) setAnalysisStatus(error.message);
+    }
+  }
+
+  function changePickMode(mode) {
+    pickModeRef.current = mode;
+    setPickMode(mode);
+  }
+
+  function pickFace(face, point, normal) {
+    if (pickModeRef.current === "fixed") {
+      setFixedFaces((faces) =>
+        faces.includes(face) ? faces.filter((f) => f !== face) : [...faces, face],
+      );
+    } else {
+      setForce({ face, center: point, normal });
+    }
+  }
+
+  function faceRef(index) {
+    return { index, centroid: analysis.faces[index].centroid };
+  }
+
+  function loadCaseError() {
+    if (!analysis) return "Wait for the part analysis to finish.";
+    if (fixedFaces.length === 0) return "Select at least one fixed face.";
+    if (!force) return "Pick the force face and point.";
+    if (fixedFaces.includes(force.face)) {
+      return "The force face can't also be a fixed face.";
+    }
+    if (!(Number(forceDiameter) > 0) || !(Number(forceMagnitude) > 0)) {
+      return "Force diameter and magnitude must be positive.";
+    }
+    return null;
   }
 
   function addRow() {
@@ -132,6 +340,13 @@ function App() {
       mesh_size: Number(meshSize),
       out_thickness: Number(outThickness),
       inf_thickness: Number(infThickness),
+      fixed_faces: fixedFaces.map(faceRef),
+      force: {
+        face: faceRef(force.face),
+        center: force.center,
+        diameter: Number(forceDiameter),
+        magnitude: Number(forceMagnitude),
+      },
     };
   }
 
@@ -148,7 +363,11 @@ function App() {
         const data = await response.json();
 
         setResult(data);
-        setStatus(`Job ${jobName}: ${data.status}`);
+        setStatus(
+          data.status === "failed" && data.error
+            ? `Job ${jobName} failed: ${data.error}`
+            : `Job ${jobName}: ${data.status}`,
+        );
 
         if (data.status === "complete" || data.status === "failed") {
           clearInterval(intervalId);
@@ -172,6 +391,12 @@ function App() {
 
     if (!stepFile) {
       setStatus("Please upload a STEP file first.");
+      return;
+    }
+
+    const caseError = loadCaseError();
+    if (caseError) {
+      setStatus(caseError);
       return;
     }
 
@@ -290,10 +515,102 @@ function App() {
             <input
               type="file"
               accept=".step,.stp"
-              onChange={(e) => setStepFile(e.target.files[0])}
+              onChange={(e) => selectStepFile(e.target.files[0])}
             />
             <span>{stepFile ? stepFile.name : "Choose base_part.step"}</span>
           </label>
+
+          {analysisStatus && <p className="status pickStatus">{analysisStatus}</p>}
+
+          {analysis && (
+            <div className="picker">
+              <div className="pickToolbar">
+                <div className="modeToggle">
+                  <button
+                    type="button"
+                    className={pickMode === "fixed" ? "modeBtn active" : "modeBtn"}
+                    onClick={() => changePickMode("fixed")}
+                  >
+                    <span className="swatch fixedSwatch" /> Fixed faces
+                  </button>
+                  <button
+                    type="button"
+                    className={pickMode === "force" ? "modeBtn active" : "modeBtn"}
+                    onClick={() => changePickMode("force")}
+                  >
+                    <span className="swatch forceSwatch" /> Force
+                  </button>
+                </div>
+                <p className="pickHint">
+                  {pickMode === "fixed"
+                    ? "Click faces to fix or release them."
+                    : "Click the point where the force is applied."}{" "}
+                  Drag to orbit.
+                </p>
+              </div>
+
+              <div className="viewerBox">
+                <PartPicker
+                  analysis={analysis}
+                  fixedFaces={fixedFaces}
+                  force={force}
+                  forceRadius={Number(forceDiameter) / 2}
+                  onPick={pickFace}
+                />
+              </div>
+
+              <div className="settingsGrid">
+                <label>
+                  Force Diameter (mm)
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    value={forceDiameter}
+                    onChange={(e) => setForceDiameter(e.target.value)}
+                  />
+                </label>
+                <label>
+                  Force Magnitude (N)
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    value={forceMagnitude}
+                    onChange={(e) => setForceMagnitude(e.target.value)}
+                  />
+                </label>
+              </div>
+
+              <div className="pickSummary">
+                <p>
+                  <strong>Fixed:</strong>{" "}
+                  {fixedFaces.length
+                    ? fixedFaces.map((f) => `face ${f}`).join(", ")
+                    : "none"}
+                  {fixedFaces.length > 0 && (
+                    <button type="button" className="linkBtn" onClick={() => setFixedFaces([])}>
+                      clear
+                    </button>
+                  )}
+                </p>
+                <p>
+                  <strong>Force:</strong>{" "}
+                  {force
+                    ? `face ${force.face} at ${formatPoint(force.center)}, pushing into the face`
+                    : "none"}
+                  {force && (
+                    <button type="button" className="linkBtn" onClick={() => setForce(null)}>
+                      clear
+                    </button>
+                  )}
+                </p>
+                {force && fixedFaces.includes(force.face) && (
+                  <p className="pickWarning">The force face is also selected as fixed.</p>
+                )}
+              </div>
+            </div>
+          )}
         </section>
 
         <section className="card">

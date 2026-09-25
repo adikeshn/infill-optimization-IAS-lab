@@ -29,6 +29,11 @@ image = (
     .add_local_python_source("sim")
 )
 
+try:
+    from fastapi import HTTPException, Request
+except ImportError:  # only needed inside the container, where the image installs it
+    HTTPException = Request = None
+
 app = modal.App("infill-worker", image=image)
 
 SECRETS = modal.Secret.from_name("infill-secrets")
@@ -163,4 +168,20 @@ def _run_one_job(job_id, sim_space, base_part_bytes, cq, run_sims):
 def trigger():
     process_jobs.spawn()
     return {"status": "triggered"}
+
+
+@app.function(secrets=[SECRETS], timeout=120)
+@modal.fastapi_endpoint(method="POST")
+def analyze_part(payload: dict, request: Request):
+    """Faces + tessellation of an uploaded STEP ({"step_b64": ...}) for face picking."""
+    if request.headers.get("X-Worker-Secret") != os.environ["WORKER_SECRET"]:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+    from sim.faces import load_step_bytes, analyze_part as analyze
+
+    try:
+        part = load_step_bytes(base64.b64decode(payload["step_b64"]))
+        return analyze(part)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Could not analyze the STEP file: {e}")
 

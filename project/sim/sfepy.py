@@ -10,7 +10,7 @@ from sfepy.discrete.conditions import EssentialBC, Conditions
 from sfepy.solvers.ls import ScipyDirect
 from sfepy.solvers.nls import Newton 
 from sfepy.base.base import IndexedStruct
-from sim.util import sloped_plane_condition, force_plane_condition
+from sim.faces import points_near_triangles
 from sfepy import data_dir
 
 
@@ -21,36 +21,42 @@ def load_Domain_sfepy(job, mesh_filename):
     omega = domain.create_region('Omega', 'all')
     return domain, omega
 
-#Generate boundries, these will be used to fix the edges of the gripper so that they dont move when applying force
-def generate_regions(domain):
-    Gamma_short_side = domain.create_region('Gamma_short_side', 
-                                            'vertices in (z >= -1e-6) & (z <= 1e-6)', 
-                                            'facet')
+#Boundary regions from the faces picked in the UI (see sim.faces.resolve_bcs): the
+#fixed faces are clamped and the force is applied on the force face inside the circle
+def generate_regions(domain, bcs):
+    coors = domain.mesh.coors
+    surface = domain.create_region('Gamma_surface', 'vertices of surface', 'facet').vertices
+    tol = bcs["tol"]
 
-    user_functions = {
-    'sloped_plane_condition': sloped_plane_condition,
-    'force_plane_condition': force_plane_condition
-    }
+    def on_face(tris):
+        return surface[points_near_triangles(coors[surface], tris, tol)]
 
-    Gamma_hypotenuse = domain.create_region('Gamma_hypotenuse',
-                                        'vertices by sloped_plane_condition',
-                                        'facet',
-                                        functions=user_functions)
-    
-    Gamma_force_region = domain.create_region('Gamma_force_region', 
-                                              'vertices by force_plane_condition',
-                                              'facet',
-                                              functions=user_functions)
+    def facet_region(name, vertices):
+        return domain.create_region(name, f'vertices by {name}_vertices', 'facet',
+                                    functions={f'{name}_vertices': lambda coors, domain=None: vertices},
+                                    allow_empty=True)
 
-    
+    fixed = []
+    for k, face in enumerate(bcs["fixed"]):
+        region = facet_region(f'Gamma_fixed_{k}', on_face(face["tris"]))
+        if region.facets.size == 0:
+            raise ValueError(f"Fixed face #{face['index']} picks up no mesh facets. Try a finer mesh size.")
+        fixed.append(region)
 
-    return {"Gamma_short_side": Gamma_short_side, 
-            "Gamma_hypotenuse": Gamma_hypotenuse, 
-            'Gamma_force_region': Gamma_force_region,
-        }
+    force = bcs["force"]
+    vertices = on_face(force["tris"])
+    vertices = vertices[np.linalg.norm(coors[vertices] - force["center"], axis=1) <= force["radius"]]
+    force_region = facet_region('Gamma_force', vertices)
+    if force_region.facets.size == 0:
+        raise ValueError(
+            f"The {2 * force['radius']:g} mm force circle on face #{force['index']} picks up no mesh "
+            "facets. Use a larger force diameter or a finer mesh size."
+        )
+
+    return {"fixed": fixed, "force": force_region}
 
 
-def calc_gripper_results(omega, regions, force_area):
+def calc_gripper_results(omega, regions, bcs):
 
     field = Field.from_args('gripper_field', np.float64, 'vector', omega, approx_order=1)
 
@@ -69,25 +75,30 @@ def calc_gripper_results(omega, regions, force_area):
 
     integral = Integral('i', order=2)
 
-    force_val = -5.0/force_area
-    force = Material('force', values={'val': np.array([[force_val], [0.0], [0.0]])})
+    #Traction = magnitude over the real area of the force region's facets, pointing into the material
+    area_term = Term.new('ev_volume(u)', integral, regions["force"], u=u)
+    area_term.setup()
+    force_area = area_term.evaluate(mode='eval')
+    traction = bcs["force"]["magnitude"] / force_area * bcs["force"]["direction"]
+    print(f"force region: {regions['force'].facets.size} facets, area {force_area:.3f} mm^2, "
+          f"traction {np.round(traction, 4).tolist()} MPa")
+    force = Material('force', values={'val': traction.reshape(3, 1)})
 
     t1 = Term.new('dw_lin_elastic(m.D, v, u)', integral, omega, m=material, v=v, u=u)
-    t2 = Term.new('dw_surface_ltr(force.val, v)', integral, regions["Gamma_force_region"], force=force, v=v)
+    t2 = Term.new('dw_surface_ltr(force.val, v)', integral, regions["force"], force=force, v=v)
 
     eq = Equation('balance', t1 + t2)
     eqs = Equations([eq])
 
-    #Fixing the edges, when using the gripper CAD, two conditions will be made to fix the two outer faces
-    fix_short_side = EssentialBC('fix_short_side', regions["Gamma_short_side"], {'u.all' : 0.0})
-    fix_hypotenuse = EssentialBC('fix_hypotenuse', regions["Gamma_hypotenuse"], {'u.all' : 0.0})
+    #Clamp every fixed face
+    fixes = [EssentialBC(f'fix_{k}', region, {'u.all' : 0.0}) for k, region in enumerate(regions["fixed"])]
 
     ls = ScipyDirect({})
     nls_status = IndexedStruct()
     nls = Newton({}, lin_solver=ls, status=nls_status)
 
     pb = Problem('compliant_gripper_metrics', equations=eqs)
-    pb.set_bcs(ebcs=Conditions([fix_short_side, fix_hypotenuse]))
+    pb.set_bcs(ebcs=Conditions(fixes))
 
     pb.set_solver(nls)
     status = IndexedStruct()
