@@ -4,11 +4,12 @@ Software for generating, simulating, and ranking 3D-printable infill designs for
 
 ## What it does
 
-- Upload a compliant gripper STEP file
+- Upload a compliant gripper STEP file (any XZ cross-section, extruded along Y)
+- Click the faces to fix and the point where a circular force is applied
 - Select infill patterns and densities
-- Generate infill geometry with CadQuery
+- Generate a shell + infill geometry with CadQuery (the infill is exposed on the two Y faces)
 - Mesh each design with Gmsh
-- Run FEA with SfePy
+- Run FEA with SfePy using the picked boundary conditions
 - Rank designs using stress, displacement, and a pseudo-CGS score
 - View/download generated STEP/STL results in the web app
 
@@ -34,7 +35,8 @@ project/
   app.py              # Flask API + job/artifact routes
   modal_app.py        # Modal worker for long-running simulations
   sim/
-    gen.py            # Infill geometry generation
+    gen.py            # Shell + infill geometry generation
+    faces.py          # Face analysis for picking + picked faces -> FEA regions
     gmsh.py           # STEP to mesh conversion
     sfepy.py          # SFePy setup and FEA solve
     sim.py            # Batch simulation + ranking logic

@@ -1,5 +1,16 @@
 import cadquery as cq
 import math
+from OCP.Bnd import Bnd_Box
+from OCP.BRepBndLib import BRepBndLib
+
+
+def part_bbox(part):
+  """Exact bounding box of the part. Shape.BoundingBox() uses cached face
+  triangulations when present (e.g. after tessellate()), which inflates it by
+  the mesh deflection on curved faces."""
+  box = Bnd_Box()
+  BRepBndLib.AddOptimal_s(part.val().wrapped, box, False, False)
+  return cq.BoundBox(box)
 
 
 def _is_y_normal(face):
@@ -17,7 +28,7 @@ def cross_section_face(part):
     )
   face = max(faces, key=lambda f: f.Area())
 
-  bbox = solid.BoundingBox()
+  bbox = part_bbox(part)
   if abs(face.Area() * (bbox.ymax - bbox.ymin) - solid.Volume()) > 0.01 * solid.Volume():
     raise ValueError(
       "The part is not a prism along Y: its volume does not match its Y-face "
@@ -53,7 +64,7 @@ def make_shell(part, wall):
   no wall and the infill is exposed there.
   """
   face = cross_section_face(part)
-  bbox = part.val().BoundingBox()
+  bbox = part_bbox(part)
   shift = cq.Vector(0, bbox.ymin - face.Center().y, 0)
   depth = cq.Vector(0, bbox.ymax - bbox.ymin, 0)
 
@@ -77,7 +88,7 @@ def make_shell(part, wall):
 
 def _lattice_bounds(part, angle_deg):
   """Part bbox (XZ, about its center) in the lattice frame rotated by angle_deg."""
-  bbox = part.val().BoundingBox()
+  bbox = part_bbox(part)
   cx = (bbox.xmin + bbox.xmax) / 2
   cz = (bbox.zmin + bbox.zmax) / 2
   corners = [(x - cx, z - cz) for x in (bbox.xmin, bbox.xmax) for z in (bbox.zmin, bbox.zmax)]
@@ -91,7 +102,7 @@ def _fill(part, lattice, angle_deg, outline_thickness):
   """Place a lattice built about the XZ origin (spanning y=0..depth) in the part's
   cavity and union it with the shell. Returns (solid, infill % of cavity volume)."""
   shell, cavity = make_shell(part, outline_thickness)
-  bbox = part.val().BoundingBox()
+  bbox = part_bbox(part)
 
   placed = (
     lattice
@@ -124,7 +135,7 @@ def get_finray_infill(
   angle_deg=-60,
   debug=True
 ):
-  bbox = part.val().BoundingBox()
+  bbox = part_bbox(part)
   depth = bbox.ymax - bbox.ymin
 
   if spacing == 0:
@@ -162,7 +173,7 @@ def get_grid_infill(
   if density <= 0 or density > 100:
     raise ValueError("density must be in (0, 100].")
 
-  bbox = part.val().BoundingBox()
+  bbox = part_bbox(part)
   depth = bbox.ymax - bbox.ymin
 
   if spacing == 0:
@@ -245,7 +256,7 @@ def get_triangle_infill(
   if density <= 0 or density > 100:
     raise ValueError("density must be in (0, 100].")
 
-  bbox = part.val().BoundingBox()
+  bbox = part_bbox(part)
   depth = bbox.ymax - bbox.ymin
 
   if spacing == 0:
@@ -319,7 +330,7 @@ def get_honeycomb_infill(
   if density <= 0 or density >= 100:
     raise ValueError("density must be in (0, 100) for honeycomb.")
 
-  bbox = part.val().BoundingBox()
+  bbox = part_bbox(part)
   depth = bbox.ymax - bbox.ymin
 
   density_wall_offset = rod_diameter / 2.0
