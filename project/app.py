@@ -1,6 +1,8 @@
 import os
 import json
 import base64
+import urllib.error
+import urllib.request
 
 import psycopg
 from psycopg.rows import dict_row
@@ -115,6 +117,36 @@ def run_simulation():
             "error": str(e),
             "metrics": None,
         }), 500
+
+
+@app.route("/analyze", methods=["POST"])
+def analyze_part():
+    # Faces + tessellation of the uploaded STEP for the face picker. Nothing is
+    # stored: the frontend re-uploads the file with /run.
+    url = os.environ.get("MODAL_ANALYZE_URL")
+    if not url:
+        return jsonify({"error": "MODAL_ANALYZE_URL is not configured."}), 503
+    if "step_file" not in request.files:
+        return jsonify({"error": "No step_file uploaded."}), 400
+
+    step_bytes = request.files["step_file"].read()
+    req = urllib.request.Request(
+        url,
+        data=json.dumps({"step_b64": base64.b64encode(step_bytes).decode()}).encode(),
+        method="POST",
+        headers={"Content-Type": "application/json", "X-Worker-Secret": WORKER_SECRET},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=55) as resp:
+            return Response(resp.read(), mimetype="application/json")
+    except urllib.error.HTTPError as e:
+        try:
+            detail = json.loads(e.read()).get("detail", str(e))
+        except ValueError:
+            detail = str(e)
+        return jsonify({"error": detail}), 422 if e.code == 422 else 502
+    except (urllib.error.URLError, TimeoutError) as e:
+        return jsonify({"error": f"Could not reach the analysis service: {e}"}), 502
 
 
 @app.route("/jobs/<job_name>/infills/<step_file>", methods=["GET"])
