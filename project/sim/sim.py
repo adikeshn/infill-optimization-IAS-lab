@@ -2,7 +2,7 @@ from sim.util import minmax
 from sim.gmsh import convert_to_mesh
 from sim.gen import get_finray_infill, get_grid_infill, get_honeycomb_infill, get_triangle_infill
 from sim.sfepy import load_Domain_sfepy, generate_regions, calc_gripper_results
-from sim.util import computePseudoCGS
+from sim.util import weighted_percentile_band
 from sim.faces import resolve_bcs
 from pathlib import Path
 import matplotlib.pyplot as plt
@@ -14,6 +14,8 @@ import os
 
 
 def model_cad(job, step_path, mesh_size, bcs):
+    """Returns [stress, displacement] for one design: the volume-weighted 90-95th
+    percentile von Mises stress [MPa] and the load-point displacement [mm]."""
 
     convert_to_mesh(job, step_path, mesh_size)
 
@@ -21,18 +23,8 @@ def model_cad(job, step_path, mesh_size, bcs):
 
     regions_dict = generate_regions(domain, bcs)
 
-    stress, disp = calc_gripper_results(omega, regions_dict, bcs)
-    von_mises, disp = computePseudoCGS(disp, stress)
-    von_mises = np.asarray(von_mises).ravel()
-    von_mises = von_mises[np.isfinite(von_mises)]
-
-
-    p95 = np.percentile(von_mises, 95)
-    p90 = np.percentile(von_mises, 90)
-    p80 = np.percentile(von_mises, 80)
-
-    top_5_20_band = von_mises[(von_mises >= p90) & (von_mises <= p95)]
-    return [np.mean(top_5_20_band), max(np.linalg.norm(disp, axis=1))]
+    von_mises, qp_volume, load_point_disp = calc_gripper_results(omega, regions_dict, bcs)
+    return [weighted_percentile_band(von_mises, qp_volume), load_point_disp]
     
 
 def _fmt_num(x):

@@ -24,8 +24,10 @@ image = (
         "scipy",
         "sympy",
         "matplotlib",
-        "fastapi[standard]"
+        "fastapi[standard]",
+        "pypardiso",  # MKL Pardiso sparse solver (~6x faster than SuperLU for the quadratic-tet solves)
     )
+    .run_commands("ldconfig")  # register the MKL runtime pip installs into /usr/local/lib
     .add_local_python_source("sim")
 )
 
