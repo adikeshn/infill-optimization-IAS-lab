@@ -285,6 +285,10 @@ a {
   width: 90px;
 }
 
+.densityRange .densityListInput {
+  width: 180px;
+}
+
 .densityRange span {
   color: #69758c;
   font-weight: 700;

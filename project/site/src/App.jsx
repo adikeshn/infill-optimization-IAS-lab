@@ -23,17 +23,30 @@ function makeRow(infill = "grid") {
   return {
     infill,
     angle: DEFAULT_ANGLES[infill],
-    densityMode: "single",
-    density: 20,
+    densityMode: "list",
+    densities: "20",
     densityStart: 10,
     densityEnd: 20,
     densityStep: 2,
   };
 }
 
+// "15, 20,30" -> [15, 20, 30]. Empty if any value isn't a number in (0, 100].
+function parseDensityList(text) {
+  const values = String(text)
+    .split(",")
+    .map((t) => t.trim())
+    .filter(Boolean)
+    .map(Number);
+  if (values.length === 0 || values.some((v) => !(v > 0 && v <= 100))) {
+    return [];
+  }
+  return [...new Set(values)];
+}
+
 function expandDensities(row) {
   if (row.densityMode !== "range") {
-    return [Number(row.density)];
+    return parseDensityList(row.densities);
   }
 
   const start = Number(row.densityStart);
@@ -400,11 +413,15 @@ function App() {
       return;
     }
 
-    const simSpace = buildSimSpace();
-    if (simSpace.infills.length === 0) {
-      setStatus("No valid density values to run. Check your density ranges.");
+    const badRow = rows.findIndex((row) => expandDensities(row).length === 0);
+    if (badRow !== -1) {
+      setStatus(
+        `Entry ${badRow + 1} has no valid densities. Use numbers between 0 and 100, separated by commas, or a valid range.`,
+      );
       return;
     }
+
+    const simSpace = buildSimSpace();
 
     const formData = new FormData();
     formData.append("step_file", stepFile);
@@ -671,7 +688,7 @@ function App() {
                           updateRow(index, "densityMode", e.target.value)
                         }
                       >
-                        <option value="single">Single</option>
+                        <option value="list">List</option>
                         <option value="range">Range</option>
                       </select>
                     </td>
@@ -719,16 +736,22 @@ function App() {
                           </span>
                         </div>
                       ) : (
-                        <input
-                          type="number"
-                          min="0"
-                          max="100"
-                          step="0.01"
-                          value={row.density}
-                          onChange={(e) =>
-                            updateRow(index, "density", e.target.value)
-                          }
-                        />
+                        <div className="densityRange">
+                          <input
+                            type="text"
+                            inputMode="decimal"
+                            className="densityListInput"
+                            aria-label="Densities"
+                            placeholder="e.g. 15, 20, 30"
+                            value={row.densities}
+                            onChange={(e) =>
+                              updateRow(index, "densities", e.target.value)
+                            }
+                          />
+                          <span className="densityRangeCount">
+                            ({previewCount} run{previewCount === 1 ? "" : "s"})
+                          </span>
+                        </div>
                       )}
                     </td>
 
