@@ -451,8 +451,8 @@ function App() {
             <th>Rank</th>
             <th>Design</th>
             <th>Pseudo CGS</th>
-            <th>Displacement</th>
-            <th>Stress</th>
+            <th title="Area-averaged displacement of the force patch along the force direction">Load-point displacement (mm)</th>
+            <th title="Volume-weighted 90-95th percentile von Mises stress">Stress, 90–95th pct (MPa)</th>
             <th>STEP</th>
           </tr>
         </thead>
@@ -753,8 +753,8 @@ function App() {
           <h2>Global Simulation Settings</h2>
 
           <div className="settingsGrid">
-            <label>
-              Mesh Size
+            <label title="Largest element size (mm). Elements are quadratic tetrahedra; 1.0 is within ~3% of a converged mesh on the reference gripper, 0.6 within ~1% but slower.">
+              Max Element Size (mm)
               <input
                 type="number"
                 step="0.01"

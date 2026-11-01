@@ -1,4 +1,5 @@
-"""Run a job locally, without Modal or Postgres, and print the ranking.
+"""Run a job locally, without Modal or Postgres, print the ranking and save it to
+jobs/job_<job_name>/metrics.json (the format validate.py reads).
 
 usage: python run_local.py <part.step> <sim_space.json> [job_name]
 
@@ -35,8 +36,10 @@ def main(step_path, sim_space_path, job="local"):
     os.chdir(BASE_DIR)
     from sim.sim import run_sims
 
-    for name, cgs, disp, stress in run_sims(job, sim_space):
+    metrics = run_sims(job, sim_space)
+    for name, cgs, disp, stress in metrics:
         print(f"{name:24s} pseudoCGS={cgs:.4f} disp={disp:.5f} stress={stress:.5f}")
+    (job_root / "metrics.json").write_text(json.dumps({"metrics": metrics}, indent=2, default=float))
 
 
 if __name__ == "__main__":
