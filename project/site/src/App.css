@@ -378,3 +378,43 @@ a {
   font-weight: 700;
   cursor: pointer;
 }
+
+.snapRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.snapLabel {
+  color: #69758c;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.snapBtn {
+  border: 1px solid #cbd4e4;
+  border-radius: 10px;
+  padding: 6px 10px;
+  background: white;
+  color: #315cff;
+  font-weight: 700;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.snapBtn:hover {
+  border-color: #315cff;
+  background: #eef2ff;
+}
+
+.checkboxLabel {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.checkboxLabel input[type="checkbox"] {
+  width: auto;
+}
