@@ -24,6 +24,21 @@ def _diag(part):
     return part_bbox(part).DiagonalLength
 
 
+def _side_dims(face, normal, pts):
+    """For a planar face whose normal is perpendicular to Y - one of the prism's side
+    faces - the two rectangle dimensions the force circle picker can snap to: the full
+    Y depth of the part ("length") and the cross-section edge's own length ("width"),
+    along with the width's in-plane direction (the length direction is always Y)."""
+    width_axis = np.cross(normal, [0.0, 1.0, 0.0])
+    width_axis /= np.linalg.norm(width_axis)
+    widths = pts @ width_axis
+    return {
+        "width": round(float(widths.max() - widths.min()), 6),
+        "width_axis": [round(float(c), 6) for c in width_axis],
+        "length": round(float(pts[:, 1].max() - pts[:, 1].min()), 6),
+    }
+
+
 def analyze_part(part):
     """Faces (index = position in part.faces().vals()) and a tessellation for picking."""
     cross_section_face(part)  # reject non-prismatic parts before the user starts picking
@@ -32,15 +47,22 @@ def analyze_part(part):
     faces, positions, triangles, face_ids = [], [], [], []
     for i, face in enumerate(part.faces().vals()):
         planar = face.geomType() == "PLANE"
-        faces.append({
+        normal = [round(c, 6) for c in face.normalAt().toTuple()] if planar else None
+
+        verts, tris = face.tessellate(tol, 0.2)
+        pts = np.array([v.toTuple() for v in verts])
+
+        face_entry = {
             "index": i,
             "type": face.geomType(),
             "area": round(face.Area(), 6),
             "centroid": [round(c, 6) for c in face.Center().toTuple()],
-            "normal": [round(c, 6) for c in face.normalAt().toTuple()] if planar else None,
-        })
+            "normal": normal,
+        }
+        if planar and abs(normal[1]) < 1e-6:
+            face_entry["side"] = _side_dims(face, normal, pts)
+        faces.append(face_entry)
 
-        verts, tris = face.tessellate(tol, 0.2)
         offset = len(positions) // 3
         positions += [round(c, 4) for v in verts for c in v.toTuple()]
         triangles += [offset + j for t in tris for j in t]

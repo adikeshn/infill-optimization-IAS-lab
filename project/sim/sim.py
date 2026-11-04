@@ -1,7 +1,7 @@
 from sim.util import minmax
 from sim.gmsh import convert_to_mesh
 from sim.gen import get_finray_infill, get_grid_infill, get_honeycomb_infill, get_triangle_infill
-from sim.sfepy import load_Domain_sfepy, generate_regions, calc_gripper_results
+from sim.sfepy import load_Domain_sfepy, generate_regions, calc_gripper_results, resolve_material
 from sim.util import weighted_percentile_band
 from sim.faces import resolve_bcs
 from pathlib import Path
@@ -13,7 +13,7 @@ import os
 
 
 
-def model_cad(job, step_path, mesh_size, bcs):
+def model_cad(job, step_path, mesh_size, bcs, material):
     """Returns [stress, displacement] for one design: the volume-weighted 90-95th
     percentile von Mises stress [MPa] and the load-point displacement [mm]."""
 
@@ -23,7 +23,7 @@ def model_cad(job, step_path, mesh_size, bcs):
 
     regions_dict = generate_regions(domain, bcs)
 
-    von_mises, qp_volume, load_point_disp = calc_gripper_results(omega, regions_dict, bcs)
+    von_mises, qp_volume, load_point_disp = calc_gripper_results(omega, regions_dict, bcs, material)
     return [weighted_percentile_band(von_mises, qp_volume), load_point_disp]
     
 
@@ -38,7 +38,7 @@ def _design_name(infill_type, den, angle):
     return f"{infill_type}-{_fmt_num(den)}-{_fmt_num(angle)}deg"
 
 
-def get_metrics(job, part, infill_type, den, angle, mesh_size, outline_thickness, infill_thickness, JOBS_DIR, bcs):
+def get_metrics(job, part, infill_type, den, angle, mesh_size, outline_thickness, infill_thickness, JOBS_DIR, bcs, material):
 
     step_file_name = _design_name(infill_type, den, angle)
 
@@ -67,7 +67,7 @@ def get_metrics(job, part, infill_type, den, angle, mesh_size, outline_thickness
 
     exporters.export(infill, f"{JOBS_DIR}/job_{job}/infills/{step_file_name}.step")
 
-    return model_cad(job, step_file_name, mesh_size, bcs), density
+    return model_cad(job, step_file_name, mesh_size, bcs, material), density
 
 
 
@@ -78,6 +78,7 @@ def run_sims(job, sim_space):
     cgs, stress, disp, names = [], [], [], []
     part = cq.importers.importStep(str(JOBS_DIR / f"job_{job}" / "base_part.step"))
     bcs = resolve_bcs(part, sim_space)
+    material = resolve_material(sim_space)
     for entry in sim_space["infills"]:
         infill_type = entry["type"]
         den = entry["density"]
@@ -85,7 +86,7 @@ def run_sims(job, sim_space):
         names.append(_design_name(infill_type, den, angle))
         mets, density = get_metrics(job, part, infill_type, den, angle,
                                     sim_space["mesh_size"], sim_space["out_thickness"],
-                                    sim_space["inf_thickness"], str(JOBS_DIR), bcs)
+                                    sim_space["inf_thickness"], str(JOBS_DIR), bcs, material)
         stress.append(mets[0])
         disp.append(mets[1])
     minmax_stress = minmax(stress)

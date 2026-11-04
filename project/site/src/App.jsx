@@ -232,6 +232,9 @@ function App() {
   const [meshSize, setMeshSize] = useState(1.0);
   const [outThickness, setOutThickness] = useState(0.87);
   const [infThickness, setInfThickness] = useState(0.45);
+  const [young, setYoung] = useState(12);
+  const [poisson, setPoisson] = useState(0.45);
+  const [hyperelastic, setHyperelastic] = useState(false);
   const [viewerUrl, setViewerUrl] = useState(null);
   const [viewerTitle, setViewerTitle] = useState("");
   const [rows, setRows] = useState([makeRow()]);
@@ -300,6 +303,29 @@ function App() {
     return { index, centroid: analysis.faces[index].centroid };
   }
 
+  // Moves `center` along `axis` (a unit 3-vector) until its projection onto that axis
+  // matches `centroid`'s, leaving the other in-plane coordinate untouched.
+  function snapAlongAxis(center, centroid, axis) {
+    const d = axis.reduce((sum, a, i) => sum + a * (centroid[i] - center[i]), 0);
+    return center.map((c, i) => c + d * axis[i]);
+  }
+
+  function forceFaceSide() {
+    return force ? analysis.faces[force.face].side : null;
+  }
+
+  function snapForceDiameterTo(dim) {
+    const side = forceFaceSide();
+    if (side) setForceDiameter(side[dim]);
+  }
+
+  function snapForceCenterTo(axis) {
+    const side = forceFaceSide();
+    if (!side) return;
+    const centroid = analysis.faces[force.face].centroid;
+    setForce({ ...force, center: snapAlongAxis(force.center, centroid, axis) });
+  }
+
   function loadCaseError() {
     if (!analysis) return "Wait for the part analysis to finish.";
     if (fixedFaces.length === 0) return "Select at least one fixed face.";
@@ -309,6 +335,12 @@ function App() {
     }
     if (!(Number(forceDiameter) > 0) || !(Number(forceMagnitude) > 0)) {
       return "Force diameter and magnitude must be positive.";
+    }
+    if (!(Number(young) > 0)) {
+      return "Young's modulus must be positive.";
+    }
+    if (!(Number(poisson) > -1 && Number(poisson) < 0.5)) {
+      return "Poisson's ratio must be between -1 and 0.5 (exclusive).";
     }
     return null;
   }
@@ -359,6 +391,11 @@ function App() {
         center: force.center,
         diameter: Number(forceDiameter),
         magnitude: Number(forceMagnitude),
+      },
+      material: {
+        young: Number(young),
+        poisson: Number(poisson),
+        hyperelastic,
       },
     };
   }
@@ -599,6 +636,28 @@ function App() {
                 </label>
               </div>
 
+              {forceFaceSide() && (
+                <div className="snapRow">
+                  <span className="snapLabel">Snap to face:</span>
+                  <button type="button" className="snapBtn" onClick={() => snapForceDiameterTo("width")}>
+                    Diameter = width ({forceFaceSide().width.toFixed(2)} mm)
+                  </button>
+                  <button type="button" className="snapBtn" onClick={() => snapForceDiameterTo("length")}>
+                    Diameter = length ({forceFaceSide().length.toFixed(2)} mm)
+                  </button>
+                  <button
+                    type="button"
+                    className="snapBtn"
+                    onClick={() => snapForceCenterTo(forceFaceSide().width_axis)}
+                  >
+                    Center on width
+                  </button>
+                  <button type="button" className="snapBtn" onClick={() => snapForceCenterTo([0, 1, 0])}>
+                    Center on length
+                  </button>
+                </div>
+              )}
+
               <div className="pickSummary">
                 <p>
                   <strong>Fixed:</strong>{" "}
@@ -804,6 +863,47 @@ function App() {
                 value={infThickness}
                 onChange={(e) => setInfThickness(e.target.value)}
               />
+            </label>
+          </div>
+        </section>
+
+        <section className="card">
+          <h2>Material</h2>
+
+          <div className="settingsGrid">
+            <label title="Linear-elastic modulus (MPa). Also used to calibrate the hyperelastic model's shear/bulk moduli, so the two agree at small strain.">
+              Young's Modulus (MPa)
+              <input
+                type="number"
+                min="0"
+                step="0.1"
+                value={young}
+                onChange={(e) => setYoung(e.target.value)}
+              />
+            </label>
+
+            <label title="Must be between -1 and 0.5 (exclusive). Values near 0.5 are nearly incompressible, which can make the hyperelastic solve harder to converge.">
+              Poisson's Ratio
+              <input
+                type="number"
+                min="-0.99"
+                max="0.49"
+                step="0.01"
+                value={poisson}
+                onChange={(e) => setPoisson(e.target.value)}
+              />
+            </label>
+
+            <label
+              className="checkboxLabel"
+              title="Solve with a nearly-incompressible Neo-Hookean material and large-deformation kinematics instead of linear elasticity. Slower and can fail to converge at very large displacements; see the console log for why."
+            >
+              <input
+                type="checkbox"
+                checked={hyperelastic}
+                onChange={(e) => setHyperelastic(e.target.checked)}
+              />
+              Hyperelastic (large deformation)
             </label>
           </div>
         </section>

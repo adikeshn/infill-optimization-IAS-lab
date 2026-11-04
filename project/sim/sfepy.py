@@ -13,11 +13,28 @@ try:  # MKL Pardiso is ~6x faster than SuperLU on these systems; fall back if MK
     from sfepy.solvers.ls import PyPardisoSolver as LinearSolver
 except Exception:
     LinearSolver = ScipyDirect
-from sfepy.solvers.nls import Newton 
+from sfepy.solvers.nls import Newton
 from sfepy.base.base import IndexedStruct
 from sim.faces import points_near_triangles
 from sim.util import cauchy_to_von_mises
 from sfepy import data_dir
+
+
+def resolve_material(sim_space):
+    """Material settings from the UI, defaulting to the TPU constants this app
+    has used since the start (see the note on `calc_gripper_results` about
+    these being provisional)."""
+    cfg = sim_space.get("material") or {}
+    try:
+        young = float(cfg.get("young", 12))
+        poisson = float(cfg.get("poisson", 0.45))
+    except (TypeError, ValueError):
+        raise ValueError("Young's modulus and Poisson's ratio must be numbers.")
+    if young <= 0:
+        raise ValueError("Young's modulus must be positive.")
+    if not (-1 < poisson < 0.5):
+        raise ValueError("Poisson's ratio must be between -1 and 0.5 (exclusive).")
+    return {"young": young, "poisson": poisson, "hyperelastic": bool(cfg.get("hyperelastic", False))}
 
 
 def load_Domain_sfepy(job, mesh_filename):
@@ -68,10 +85,20 @@ def generate_regions(domain, bcs):
 APPROX_ORDER = 2
 
 
-def calc_gripper_results(omega, regions, bcs):
-    """Linear-elastic solve. Returns (von Mises stress at every quadrature point [MPa],
-    the volume each quadrature point represents [mm^3], and the load-point displacement:
-    the area-averaged displacement of the force patch along the force direction [mm])."""
+def calc_gripper_results(omega, regions, bcs, material):
+    """Linear-elastic or (optionally) nearly-incompressible Neo-Hookean solve, selected
+    by `material["hyperelastic"]`. Returns (von Mises stress at every quadrature point
+    [MPa], the volume each quadrature point represents [mm^3], and the load-point
+    displacement: the area-averaged displacement of the force patch along the force
+    direction [mm]).
+
+    `material["young"]`/`["poisson"]` are provisional TPU constants (see the UI) that
+    the user can override; with a linear model and min-max normalized metrics, Young's
+    modulus does not change the ranking. The hyperelastic path calibrates its shear/bulk
+    moduli from the same (young, poisson) so the two models agree in the small-strain
+    limit, but TPU really is hyperelastic at the large deflections this app targets -
+    see sim/sfepy.py's module docs for what that path does differently.
+    """
 
     field = Field.from_args('gripper_field', np.float64, 'vector', omega, approx_order=APPROX_ORDER)
 
@@ -79,18 +106,13 @@ def calc_gripper_results(omega, regions, bcs):
     u = FieldVariable('u', 'unknown', field)
     v = FieldVariable('v', 'test', field, primary_var_name='u')
 
-    #TPU material constants for use in FEA analysis: might not be exactly correct but will verify later.
-    #With a linear model and min-max normalized metrics, Young's modulus does not change the ranking.
-    young = 12 # in Mpa
-    poisson = 0.45 
-    D = stiffness_from_youngpoisson(3, young, poisson)
-
-    #TPU Material object
-    material = Material('m', D=D)
+    young, poisson = material["young"], material["poisson"]
 
     integral = Integral('i', order=2 * APPROX_ORDER)
 
-    #Traction = magnitude over the real area of the force region's facets, pointing into the material
+    #Traction = magnitude over the real area of the force region's facets, pointing into the material.
+    #This is a dead load (fixed direction and magnitude, integrated over the undeformed surface), so
+    #the same term is correct whether the internal energy below is linear or hyperelastic.
     area_term = Term.new('ev_volume(u)', integral, regions["force"], u=u)
     area_term.setup()
     force_area = area_term.evaluate(mode='eval')
@@ -98,32 +120,79 @@ def calc_gripper_results(omega, regions, bcs):
     print(f"force region: {regions['force'].facets.size} facets, area {force_area:.3f} mm^2, "
           f"traction {np.round(traction, 4).tolist()} MPa")
     force = Material('force', values={'val': traction.reshape(3, 1)})
-
-    t1 = Term.new('dw_lin_elastic(m.D, v, u)', integral, omega, m=material, v=v, u=u)
-    t2 = Term.new('dw_surface_ltr(force.val, v)', integral, regions["force"], force=force, v=v)
-
-    #internal forces = applied load (t1 + t2 = 0 would apply the traction in the opposite direction)
-    eq = Equation('balance', t1 - t2)
-    eqs = Equations([eq])
+    t_force = Term.new('dw_surface_ltr(force.val, v)', integral, regions["force"], force=force, v=v)
 
     #Clamp every fixed face
     fixes = [EssentialBC(f'fix_{k}', region, {'u.all' : 0.0}) for k, region in enumerate(regions["fixed"])]
 
-    nls_status = IndexedStruct()
-    nls = Newton({}, lin_solver=LinearSolver({}), status=nls_status)
+    if material["hyperelastic"]:
+        #Nearly-incompressible Neo-Hookean, Total Lagrangian formulation (dw_tl_he_neohook +
+        #dw_tl_bulk_penalty, the standard SfePy pairing for this - see sfepy's own
+        #examples/large_deformation/hyperelastic.py). mu/K are the usual small-strain-equivalent
+        #moduli for (young, poisson); the bulk penalty approach can ill-condition as poisson -> 0.5.
+        mat = Material('m', mu=young / (2 * (1 + poisson)), K=young / (3 * (1 - 2 * poisson)))
+        t_nh = Term.new('dw_tl_he_neohook(m.mu, v, u)', integral, omega, m=mat, v=v, u=u)
+        t_bulk = Term.new('dw_tl_bulk_penalty(m.K, v, u)', integral, omega, m=mat, v=v, u=u)
+        eqs = Equations([Equation('balance', t_nh + t_bulk - t_force)])
+        pb = Problem('compliant_gripper_metrics', equations=eqs)
+        pb.set_bcs(ebcs=Conditions(fixes))
 
-    pb = Problem('compliant_gripper_metrics', equations=eqs)
-    pb.set_bcs(ebcs=Conditions(fixes))
+        #Large-deformation problems need more than the 1-iteration default (exact for the linear
+        #case below) to converge; these are a starting point, not tuned against this app's meshes.
+        nls_status = IndexedStruct()
+        nls = Newton({'i_max': 25, 'eps_a': 1e-8, 'eps_r': 1e-6}, lin_solver=LinearSolver({}), status=nls_status)
+        pb.set_solver(nls)
+        pb.solve(status=IndexedStruct(), save_results=False)
+        if nls_status.condition != 0:
+            raise RuntimeError(
+                f"The hyperelastic solve did not converge (condition={nls_status.condition}, "
+                f"{nls_status.n_iter} Newton iterations, residual {nls_status.err:.3g}). Try a "
+                "smaller force, a coarser mesh, or disable hyperelasticity for this design."
+            )
 
-    pb.set_solver(nls)
-    status = IndexedStruct()
-    pb.solve(status=status, save_results=False)
+        #Effective 2nd Piola-Kirchhoff stress at the quadrature points (both terms contribute),
+        #pushed forward to true (Cauchy) stress via sigma = F.S.F^T / J so the von Mises value
+        #means the same physical thing as in the linear path below.
+        s_nh = pb.evaluate('dw_tl_he_neohook.i.Omega(m.mu, v, u)', mode='qp', term_mode='stress',
+                           m=mat, integrals={'i': integral})
+        s_bulk = pb.evaluate('dw_tl_bulk_penalty.i.Omega(m.K, v, u)', mode='qp', term_mode='stress',
+                             m=mat, integrals={'i': integral})
+        sxx, syy, szz, sxy, syz, sxz = (s_nh + s_bulk).reshape(-1, 6).T
+        S = np.zeros((len(sxx), 3, 3))
+        S[:, 0, 0], S[:, 1, 1], S[:, 2, 2] = sxx, syy, szz
+        S[:, 0, 1] = S[:, 1, 0] = sxy
+        S[:, 1, 2] = S[:, 2, 1] = syz
+        S[:, 0, 2] = S[:, 2, 0] = sxz
 
-    #Stress at the quadrature points (not element averages, which smear out bending stress
-    #through a rod's thickness), with each point's share of the volume for percentile weighting
-    stress = pb.evaluate('ev_cauchy_stress.i.Omega(m.D, u)', mode='qp', m=material,
-                         integrals={'i': integral})
-    von_mises = cauchy_to_von_mises(stress.reshape(-1, 6).T)
+        F = pb.evaluate('ev_def_grad.i.Omega(u)', mode='qp', term_mode='def_grad',
+                        integrals={'i': integral}).reshape(-1, 3, 3)
+        J = pb.evaluate('ev_def_grad.i.Omega(u)', mode='qp', term_mode='jacobian',
+                        integrals={'i': integral}).reshape(-1)
+
+        cauchy = np.einsum('nij,njk,nlk->nil', F, S, F) / J[:, None, None]
+        von_mises = cauchy_to_von_mises(np.array([
+            cauchy[:, 0, 0], cauchy[:, 1, 1], cauchy[:, 2, 2],
+            cauchy[:, 0, 1], cauchy[:, 1, 2], cauchy[:, 0, 2],
+        ]))
+
+    else:
+        D = stiffness_from_youngpoisson(3, young, poisson)
+        mat = Material('m', D=D)
+        t1 = Term.new('dw_lin_elastic(m.D, v, u)', integral, omega, m=mat, v=v, u=u)
+        eqs = Equations([Equation('balance', t1 - t_force)])
+        pb = Problem('compliant_gripper_metrics', equations=eqs)
+        pb.set_bcs(ebcs=Conditions(fixes))
+
+        nls = Newton({}, lin_solver=LinearSolver({}), status=IndexedStruct())
+        pb.set_solver(nls)
+        pb.solve(status=IndexedStruct(), save_results=False)
+
+        #Stress at the quadrature points (not element averages, which smear out bending stress
+        #through a rod's thickness), with each point's share of the volume for percentile weighting
+        stress = pb.evaluate('ev_cauchy_stress.i.Omega(m.D, u)', mode='qp', m=mat,
+                             integrals={'i': integral})
+        von_mises = cauchy_to_von_mises(stress.reshape(-1, 6).T)
+
     geo, _ = field.get_mapping(omega, integral, 'cell')
     qp_volume = np.asarray(geo.det).reshape(-1)
 

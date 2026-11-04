@@ -11,10 +11,12 @@ with the boundary conditions the app used to hardcode:
  "fixed_faces": [{"index": 2, "centroid": [-9.4, 2.5, 0.0]},
                  {"index": 1, "centroid": [-9.4, 2.5, 18.3535]}],
  "force": {"face": {"index": 0, "centroid": [0.0, 2.5, 18.3535]},
-           "center": [0.0, 2.5, 18.3535], "diameter": 5.2, "magnitude": 5.0}}
+           "center": [0.0, 2.5, 18.3535], "diameter": 5.2, "magnitude": 5.0},
+ "material": {"young": 12, "poisson": 0.45, "hyperelastic": false}}
 
-Face indices and centroids come from sim.faces.analyze_part (what /analyze returns).
-Outputs are left in jobs/job_<job_name>/.
+"material" is optional; omitting it, or any of its keys, falls back to the defaults
+above (see sim.sfepy.resolve_material). Face indices and centroids come from
+sim.faces.analyze_part (what /analyze returns). Outputs are left in jobs/job_<job_name>/.
 """
 import json
 import os
