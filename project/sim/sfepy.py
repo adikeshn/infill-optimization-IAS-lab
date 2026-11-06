@@ -1,7 +1,7 @@
 
 import numpy as np
 from sfepy.discrete.fem import Mesh, Field
-from sfepy.discrete import (Material, FieldVariable, Integral, Equation, Equations, Problem)
+from sfepy.discrete import (Material, FieldVariable, Integral, Equation, Equations, Problem, Function)
 from sfepy.terms import Term
 from sfepy.discrete import Problem
 from sfepy.mechanics.matcoefs import stiffness_from_youngpoisson
@@ -84,6 +84,11 @@ def generate_regions(domain, bcs):
 #is enough to reorder patterns. With quadratic tets, results change <3% between 1.0 and 0.45 mm.
 APPROX_ORDER = 2
 
+#Load stepping for the hyperelastic solve, as fractions of the full force: the first increment,
+#and the smallest increment to cut back to before giving up.
+HYPER_FIRST_STEP = 0.1
+HYPER_MIN_STEP = 0.005
+
 
 def calc_gripper_results(omega, regions, bcs, material):
     """Linear-elastic or (optionally) nearly-incompressible Neo-Hookean solve, selected
@@ -97,7 +102,7 @@ def calc_gripper_results(omega, regions, bcs, material):
     modulus does not change the ranking. The hyperelastic path calibrates its shear/bulk
     moduli from the same (young, poisson) so the two models agree in the small-strain
     limit, but TPU really is hyperelastic at the large deflections this app targets -
-    see sim/sfepy.py's module docs for what that path does differently.
+    see the README's "FEA model and metrics" for what that path does differently.
     """
 
     field = Field.from_args('gripper_field', np.float64, 'vector', omega, approx_order=APPROX_ORDER)
@@ -119,8 +124,6 @@ def calc_gripper_results(omega, regions, bcs, material):
     traction = bcs["force"]["magnitude"] / force_area * bcs["force"]["direction"]
     print(f"force region: {regions['force'].facets.size} facets, area {force_area:.3f} mm^2, "
           f"traction {np.round(traction, 4).tolist()} MPa")
-    force = Material('force', values={'val': traction.reshape(3, 1)})
-    t_force = Term.new('dw_surface_ltr(force.val, v)', integral, regions["force"], force=force, v=v)
 
     #Clamp every fixed face
     fixes = [EssentialBC(f'fix_{k}', region, {'u.all' : 0.0}) for k, region in enumerate(regions["fixed"])]
@@ -131,24 +134,57 @@ def calc_gripper_results(omega, regions, bcs, material):
         #examples/large_deformation/hyperelastic.py). mu/K are the usual small-strain-equivalent
         #moduli for (young, poisson); the bulk penalty approach can ill-condition as poisson -> 0.5.
         mat = Material('m', mu=young / (2 * (1 + poisson)), K=young / (3 * (1 - 2 * poisson)))
+        load = {"scale": 0.0}
+
+        def force_fun(ts, coors, mode=None, **kwargs):
+            if mode == 'qp':
+                return {'val': np.tile(load["scale"] * traction.reshape(1, 3, 1), (coors.shape[0], 1, 1))}
+
+        force = Material('force', function=Function('force_fun', force_fun))
+        t_force = Term.new('dw_surface_ltr(force.val, v)', integral, regions["force"], force=force, v=v)
         t_nh = Term.new('dw_tl_he_neohook(m.mu, v, u)', integral, omega, m=mat, v=v, u=u)
         t_bulk = Term.new('dw_tl_bulk_penalty(m.K, v, u)', integral, omega, m=mat, v=v, u=u)
         eqs = Equations([Equation('balance', t_nh + t_bulk - t_force)])
         pb = Problem('compliant_gripper_metrics', equations=eqs)
         pb.set_bcs(ebcs=Conditions(fixes))
 
-        #Large-deformation problems need more than the 1-iteration default (exact for the linear
-        #case below) to converge; these are a starting point, not tuned against this app's meshes.
+        #Two things are needed for Newton to converge at full load. Load stepping: the force is
+        #ramped up, each increment starting from the last converged shape, and an increment that
+        #fails is halved. And full Newton steps (ls_on): under large rotations a correct Newton step
+        #often raises the residual norm on the way to converging, and the default line search,
+        #which only accepts steps that lower it, shrinks every step to ~1% and stalls. Steps that
+        #invert elements are still cut back (ls_red_warp), independently of ls_on.
         nls_status = IndexedStruct()
-        nls = Newton({'i_max': 25, 'eps_a': 1e-8, 'eps_r': 1e-6}, lin_solver=LinearSolver({}), status=nls_status)
+        nls = Newton({'i_max': 15, 'eps_a': 1e-8, 'eps_r': 1e-6, 'ls_on': 1e3},
+                     lin_solver=LinearSolver({}), status=nls_status)
         pb.set_solver(nls)
-        pb.solve(status=IndexedStruct(), save_results=False)
-        if nls_status.condition != 0:
-            raise RuntimeError(
-                f"The hyperelastic solve did not converge (condition={nls_status.condition}, "
-                f"{nls_status.n_iter} Newton iterations, residual {nls_status.err:.3g}). Try a "
-                "smaller force, a coarser mesh, or disable hyperelasticity for this design."
-            )
+
+        frac, step, state, last_error = 0.0, HYPER_FIRST_STEP, None, None
+        while frac < 1.0:
+            trial = min(frac + step, 1.0)
+            load["scale"] = trial
+            try:
+                #Copies both ways: get_state() is a view of the live solution, which a failed
+                #increment would otherwise overwrite, leaving the retry to start from it.
+                variables = pb.solve(state0=None if state is None else state.copy(),
+                                     status=IndexedStruct(), save_results=False)
+                converged = nls_status.condition == 0
+            except ValueError as e:  # an increment that inverts elements beyond the line search's reach
+                converged, last_error = False, e
+            if converged:
+                frac, state = trial, variables.get_state().copy()
+                step *= 1.5
+            else:
+                step /= 2
+                if step < HYPER_MIN_STEP:
+                    magnitude = bcs["force"]["magnitude"]
+                    raise RuntimeError(
+                        f"The hyperelastic solve did not converge past {frac * magnitude:.3g} N of the "
+                        f"{magnitude:g} N load (increments cut down to {step * magnitude:.2g} N"
+                        + (f"; last error: {last_error}" if last_error else "") + "). The design may "
+                        "buckle or snap through near that load, which this load-controlled solve "
+                        "can't follow."
+                    )
 
         #Effective 2nd Piola-Kirchhoff stress at the quadrature points (both terms contribute),
         #pushed forward to true (Cauchy) stress via sigma = F.S.F^T / J so the von Mises value
@@ -178,6 +214,8 @@ def calc_gripper_results(omega, regions, bcs, material):
     else:
         D = stiffness_from_youngpoisson(3, young, poisson)
         mat = Material('m', D=D)
+        force = Material('force', values={'val': traction.reshape(3, 1)})
+        t_force = Term.new('dw_surface_ltr(force.val, v)', integral, regions["force"], force=force, v=v)
         t1 = Term.new('dw_lin_elastic(m.D, v, u)', integral, omega, m=mat, v=v, u=u)
         eqs = Equations([Equation('balance', t1 - t_force)])
         pb = Problem('compliant_gripper_metrics', equations=eqs)

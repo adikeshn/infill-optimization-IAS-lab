@@ -56,8 +56,8 @@ load on the picked circle - a fixed direction and magnitude integrated over the
 the "Hyperelastic (large deformation)" toggle switches to a nearly-incompressible
 Neo-Hookean, Total Lagrangian solve instead (`dw_tl_he_neohook` + `dw_tl_bulk_penalty`
 in `sim/sfepy.py`), with `mu`/`K` calibrated from the same (E, ν) so the two models
-agree at small strain. The dead-load traction term doesn't depend on displacement, so
-it's reused unchanged by both paths - this is deliberately *not* a follower/pressure
+agree at small strain. The dead-load traction doesn't depend on displacement, so both
+paths apply the same one (the hyperelastic solve ramps it up in steps) - this is deliberately *not* a follower/pressure
 load, which is harder to converge (see "Known limits" below).
 
 - **Elements:** quadratic (10-node) tetrahedra. Linear tetrahedra are far too stiff
@@ -81,11 +81,19 @@ not fully: earlier large-deformation neo-Hookean runs on the reference gripper (
 tets, 0.6 mm, a pressure-patch follower load) gave 20–50% more displacement at 5 N than
 the linear model, by a different amount for each infill, but Newton stopped converging
 somewhere between about 1.5 and 4 N, depending on the design and element order - right
-around this app's default force magnitude. The current hyperelastic path uses a dead
-load instead of a follower load (see above), which should converge more easily, but
-this hasn't been re-measured against those numbers; `calc_gripper_results` raises a
-clear error rather than returning an under-converged result if Newton doesn't converge,
-so a job failing with that error at large forces is expected, not a bug. Neither path
+around this app's default force magnitude. The current hyperelastic path fixes that
+with three changes: a dead load instead of a follower load (see above), load stepping
+(the force is ramped from 10% upward, growing each increment 1.5x after a converged step
+and halving it after a failed one, each step starting from the last converged state),
+and full Newton steps. SfePy's default line search was the main culprit: under large
+rotation a correct Newton step raises the residual norm ~100x before it converges, and
+the default backtracking cut every step to ~1% so Newton stalled. Increments that would
+invert an element are still cut back. With this, all 12 reference designs (4 infills x
+3 densities, 1.0 mm mesh) converge at 5 N, taking 2-15 min each (~82 min for the batch on
+4 CPUs) versus ~10 s each for the linear solve. If the increment shrinks below 0.5% of
+the load (e.g. at a snap-through, which a load-controlled solve can't follow),
+`calc_gripper_results` raises an error naming the load it reached rather than
+returning an under-converged result. Neither path
 has contact with an object - a displacement-controlled indenter or contact model would
 be needed for that. The way to tell whether any of this matters is to test printed
 grippers and compare with `validate.py`.

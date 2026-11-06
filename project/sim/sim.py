@@ -84,9 +84,12 @@ def run_sims(job, sim_space):
         den = entry["density"]
         angle = entry.get("angle", 0)
         names.append(_design_name(infill_type, den, angle))
-        mets, density = get_metrics(job, part, infill_type, den, angle,
-                                    sim_space["mesh_size"], sim_space["out_thickness"],
-                                    sim_space["inf_thickness"], str(JOBS_DIR), bcs, material)
+        try:
+            mets, density = get_metrics(job, part, infill_type, den, angle,
+                                        sim_space["mesh_size"], sim_space["out_thickness"],
+                                        sim_space["inf_thickness"], str(JOBS_DIR), bcs, material)
+        except Exception as e:
+            raise RuntimeError(f"{names[-1]}: {e}") from e
         stress.append(mets[0])
         disp.append(mets[1])
     minmax_stress = minmax(stress)

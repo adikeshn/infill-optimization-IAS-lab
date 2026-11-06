@@ -61,7 +61,10 @@ def _http_post(url, payload, secret, timeout=120):
 
 @app.function(
     secrets=[SECRETS],
-    timeout=1800,        
+    # One call drains every queued job. A 12-design hyperelastic job took ~82 min
+    # on 4 CPUs (2-15 min per design), so leave plenty of headroom: if Modal kills
+    # the call, the job it was on is never marked failed and stays "running".
+    timeout=4 * 60 * 60,
     cpu=4.0,
     memory=8192,         
     max_containers=1,    
